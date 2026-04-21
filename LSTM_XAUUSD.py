@@ -33,18 +33,94 @@ df.ta.atr(length=14, append=True)
 psar = df.ta.psar()
 df['PSAR'] = psar.iloc[:, 0].fillna(psar.iloc[:, 1])
 
-# SMC sederhana
-df['Order_Block_Low'] = df['Low'].rolling(window=24).min()
-df['Jarak_Order_Block'] = df['Close'] - df['Order_Block_Low']
+# Smart Money Concept
+# ========================
+# SMC (SMART MONEY CONCEPT)
+# ========================
+
+# 1. SWING HIGH & LOW
+def swing_high_low(df, window=5):
+    df['swing_high'] = np.where(
+        df['High'] == df['High'].rolling(window=window, center=True).max(),
+        df['High'],
+        np.nan
+    )
+    
+    df['swing_low'] = np.where(
+        df['Low'] == df['Low'].rolling(window=window, center=True).min(),
+        df['Low'],
+        np.nan
+    )
+    
+    return df
+
+
+# 2. ORDER BLOCK (Sederhana tapi valid)
+def order_block(df):
+    # Bullish OB → candle bearish lalu bullish
+    df['OB_bull'] = np.where(
+        (df['Close'] > df['Open']) & (df['Close'].shift(1) < df['Open'].shift(1)),
+        df['Low'],
+        0
+    )
+    
+    # Bearish OB → candle bullish lalu bearish
+    df['OB_bear'] = np.where(
+        (df['Close'] < df['Open']) & (df['Close'].shift(1) > df['Open'].shift(1)),
+        df['High'],
+        0
+    )
+    
+    return df
+
+
+# 3. FAIR VALUE GAP (FVG)
+def fair_value_gap(df):
+    # Gap naik (bullish imbalance)
+    df['FVG_up'] = np.where(
+        df['Low'] > df['High'].shift(2),
+        df['Low'] - df['High'].shift(2),
+        0
+    )
+
+    # Gap turun (bearish imbalance)
+    df['FVG_down'] = np.where(
+        df['High'] < df['Low'].shift(2),
+        df['Low'].shift(2) - df['High'],
+        0
+    )
+    
+    return df
+
+
+# ========================
+# APPLY SMC
+# ========================
+df = swing_high_low(df)
+df = order_block(df)
+df = fair_value_gap(df)
+
+# ========================
+# HANDLE NaN
+# ========================
+df.fillna(0, inplace=True)
 
 # TARGET (REGRESI t+1)
 df['Target'] = df['Close'].shift(-1)
 
 df.dropna(inplace=True)
 
-fitur = ['Open', 'High', 'Low', 'Close',
-         'EMA_20', 'EMA_50', 'RSI_14', 'ATRr_14',
-         'PSAR', 'Jarak_Order_Block']
+# FITUR DI SMC
+fitur = [
+    'Open', 'High', 'Low', 'Close',
+    'EMA_20', 'EMA_50', 'RSI_14', 'ATRr_14',
+    'PSAR',
+    
+    # SMC FEATURES
+    'swing_high', 'swing_low',
+    'OB_bull', 'OB_bear',
+    'FVG_up', 'FVG_down'
+]
 
 #Split Data
 train_size = int(len(df) * 0.8)
