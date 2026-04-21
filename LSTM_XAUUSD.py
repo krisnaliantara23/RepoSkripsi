@@ -2,137 +2,150 @@ import pandas as pd
 import numpy as np
 import pandas_ta as ta
 from sklearn.preprocessing import MinMaxScaler
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+from sklearn.metrics import accuracy_score, precision_score, recall_score
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dropout, Dense
 from tensorflow.keras.optimizers import Adam
-from sklearn.metrics import mean_absolute_error, mean_squared_error, mean_absolute_percentage_error
-import matplotlib.pyplot as plt
 from tensorflow.keras.callbacks import EarlyStopping
-print("1. Memuat data dan menghitung indikator teknikal...")
+import matplotlib.pyplot as plt
+
+# load Data==========
 df = pd.read_csv('XAUUSD_H1_1Tahun.csv', sep='\t')
 
 df['Date'] = pd.to_datetime(df['<DATE>'] + ' ' + df['<TIME>'])
 df.set_index('Date', inplace=True)
-df.rename(columns={'<OPEN>': 'Open', '<HIGH>': 'High', '<LOW>': 'Low', '<CLOSE>': 'Close', '<TICKVOL>': 'Volume'}, inplace=True)
 
+df.rename(columns={
+    '<OPEN>': 'Open',
+    '<HIGH>': 'High',
+    '<LOW>': 'Low',
+    '<CLOSE>': 'Close',
+    '<TICKVOL>': 'Volume'
+}, inplace=True)
+
+# Bagian Indikator=========
 df.ta.ema(length=20, append=True)
 df.ta.ema(length=50, append=True)
 df.ta.rsi(length=14, append=True)
 df.ta.atr(length=14, append=True)
 
-#
 psar = df.ta.psar()
-df['PSAR'] = psar.iloc[:, 0].fillna(psar.iloc[:, 1]) 
+df['PSAR'] = psar.iloc[:, 0].fillna(psar.iloc[:, 1])
 
-# Representasi Fitur SMC
-df['Order_Block_Low'] = df['Low'].rolling(window=24).min() 
+# SMC sederhana
+df['Order_Block_Low'] = df['Low'].rolling(window=24).min()
 df['Jarak_Order_Block'] = df['Close'] - df['Order_Block_Low']
 
-#PEMBUATAN LABEL REGRESI
+# TARGET (REGRESI t+1)
 df['Target'] = df['Close'].shift(-1)
-kolom_dipakai = ['Open', 'High', 'Low', 'Close', 'EMA_20', 'EMA_50', 'RSI_14', 'ATRr_14', 'PSAR', 'Jarak_Order_Block']
-df.dropna(subset=kolom_dipakai, inplace=True)
 
-# TAHAP 4: DEFINISI SKENARIO
-skenario_pengujian = {
-    "Model 1 (OHLC)": ['Open', 'High', 'Low', 'Close'],
-    "Model 2 (OHLC + Indikator)": ['Open', 'High', 'Low', 'Close', 'EMA_20', 'EMA_50', 'RSI_14', 'ATRr_14', 'PSAR'],
-    "Model 3 (OHLC + Indikator + SMC)": ['Open', 'High', 'Low', 'Close', 'EMA_20', 'EMA_50', 'RSI_14', 'ATRr_14', 'PSAR', 'Jarak_Order_Block']
-}
+df.dropna(inplace=True)
 
-hasil_evaluasi = {}
-window_size = 60 
+fitur = ['Open', 'High', 'Low', 'Close',
+         'EMA_20', 'EMA_50', 'RSI_14', 'ATRr_14',
+         'PSAR', 'Jarak_Order_Block']
 
-for nama_model, fitur_pilihan in skenario_pengujian.items():
-    print(f"\nRUNNING: {nama_model}")
-    
-    # 1. Normalisasi
-    scaler_x = MinMaxScaler(feature_range=(0, 1))
-    scaler_y = MinMaxScaler(feature_range=(0, 1))
-    
-    data_x = scaler_x.fit_transform(df[fitur_pilihan])
-    data_y = scaler_y.fit_transform(df[['Close']]) # KOREKSI: Target langsung menggunakan kolom 'Close' murni
+#Split Data
+train_size = int(len(df) * 0.8)
+val_size = int(len(df) * 0.1)
 
-    # 2. Sliding Window (Otomatis mengambil t+1 sebagai y)
-    X, y = [], []
-    for i in range(window_size, len(data_x)):
-        X.append(data_x[i - window_size : i])
-        y.append(data_y[i]) # data_y[i] adalah Close di waktu t+1 (tepat setelah window)
-    X, y = np.array(X), np.array(y)
+train_df = df[:train_size]
+val_df = df[train_size:train_size+val_size]
+test_df = df[train_size+val_size:]
 
-    # 3. Split Data 80:10:10
-    train_size = int(len(X) * 0.8)
-    val_size = int(len(X) * 0.1)
-    
-    X_train, y_train = X[:train_size], y[:train_size]
-    X_val, y_val = X[train_size : train_size+val_size], y[train_size : train_size+val_size]
-    X_test, y_test = X[train_size+val_size:], y[train_size+val_size:]
+# Scaling
+scaler_x = MinMaxScaler()
+scaler_y = MinMaxScaler()
 
-    # 4. Arsitektur Model Regresi
-    model = Sequential([
-        LSTM(50, return_sequences=True, input_shape=(X.shape[1], X.shape[2])),
-        Dropout(0.1), # KOREKSI: Diturunkan jadi 0.1 agar model tidak terlalu banyak "lupa"
-        LSTM(50, return_sequences=False),
-        Dropout(0.1),
-        Dense(1, activation='linear') 
-    ])
+scaler_x.fit(train_df[fitur])
+scaler_y.fit(train_df[['Target']])
 
-    model.compile(optimizer=Adam(learning_rate=0.001), loss='mse')
+train_x = scaler_x.transform(train_df[fitur])
+val_x = scaler_x.transform(val_df[fitur])
+test_x = scaler_x.transform(test_df[fitur])
 
-    # KOREKSI: Fitur EarlyStopping agar model bisa belajar lama (epochs besar) 
-    # tapi otomatis berhenti jika sudah mencapai titik terbaik (mencegah overfitting).
-    early_stop = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
+train_y = scaler_y.transform(train_df[['Target']])
+val_y = scaler_y.transform(val_df[['Target']])
+test_y = scaler_y.transform(test_df[['Target']])
 
-    # 5. Training
-    print("Sedang melatih model... (Tunggu sebentar)")
-    # KOREKSI: Epochs dinaikkan ke 100 agar model punya cukup waktu mengurangi 'gap' harga
-    model.fit(X_train, y_train, validation_data=(X_val, y_val), epochs=100, batch_size=32, callbacks=[early_stop], verbose=0)
+# Sliding Window
+def create_dataset(X, y, window=60):
+    Xs, ys = [], []
+    for i in range(window, len(X)):
+        Xs.append(X[i-window:i])
+        ys.append(y[i])
+    return np.array(Xs), np.array(ys)
 
-    # 6. Prediksi & Inverse Transform
-    y_pred_scaled = model.predict(X_test)
-    y_true = scaler_y.inverse_transform(y_test.reshape(-1, 1))
-    y_pred = scaler_y.inverse_transform(y_pred_scaled.reshape(-1, 1))
+window_size = 60
 
-    # 7. Evaluasi Metrik
-    mae = mean_absolute_error(y_true, y_pred)
-    rmse = np.sqrt(mean_squared_error(y_true, y_pred))
-    mape = mean_absolute_percentage_error(y_true, y_pred) * 100
+X_train, y_train = create_dataset(train_x, train_y, window_size)
+X_val, y_val = create_dataset(val_x, val_y, window_size)
+X_test, y_test = create_dataset(test_x, test_y, window_size)
 
-    hasil_evaluasi[nama_model] = {'MAE': mae, 'RMSE': rmse, 'MAPE': mape, 'Pred': y_pred, 'True': y_true}
-    print(f"Hasil {nama_model} -> MAE: {mae:.2f}, RMSE: {rmse:.2f}, MAPE: {mape:.2f}%")
-    # TAHAP 5: VISUALISASI PERBANDINGAN (TAMBAHKAN INI DI PALING BAWAH)
-print("\n" + "="*50)
-print("MEMBUAT VISUALISASI...")
-print("="*50)
+# Modelling 
+model = Sequential([
+    LSTM(50, return_sequences=True, input_shape=(X_train.shape[1], X_train.shape[2])),
+    Dropout(0.2),
+    LSTM(50),
+    Dropout(0.2),
+    Dense(1, activation='linear')
+])
 
-# Kita ambil 100 sampel terakhir agar grafik tidak terlalu padat dan terlihat jelas gap-nya
-n_view = 100 
+model.compile(
+    optimizer=Adam(learning_rate=0.001),
+    loss='mse'
+)
 
-plt.figure(figsize=(15, 8))
+early_stop = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
 
-# Plot Harga Aktual
-# Kita ambil dari model manapun karena harga aktualnya sama
-plt.plot(hasil_evaluasi["Model 1 (OHLC)"]['True'][-n_view:], 
-         label='Harga Aktual (True)', color='black', linewidth=2, linestyle='--')
+# Uji Latih
+model.fit(
+    X_train, y_train,
+    validation_data=(X_val, y_val),
+    epochs=100,
+    batch_size=32,
+    callbacks=[early_stop],
+    verbose=1
+)
 
-# Plot Prediksi Model 1
-plt.plot(hasil_evaluasi["Model 1 (OHLC)"]['Pred'][-n_view:], 
-         label=f"Model 1 (MAPE: {hasil_evaluasi['Model 1 (OHLC)']['MAPE']:.2f}%)", alpha=0.7)
+# Prediksi
+y_pred_scaled = model.predict(X_test)
 
-# Plot Prediksi Model 2
-plt.plot(hasil_evaluasi["Model 2 (OHLC + Indikator)"]['Pred'][-n_view:], 
-         label=f"Model 2 (MAPE: {hasil_evaluasi['Model 2 (OHLC + Indikator)']['MAPE']:.2f}%)", alpha=0.7)
+y_true = scaler_y.inverse_transform(y_test)
+y_pred = scaler_y.inverse_transform(y_pred_scaled)
 
-# Plot Prediksi Model 3
-plt.plot(hasil_evaluasi["Model 3 (OHLC + Indikator + SMC)"]['Pred'][-n_view:], 
-         label=f"Model 3 (MAPE: {hasil_evaluasi['Model 3 (OHLC + Indikator + SMC)']['MAPE']:.2f}%)", 
-         color='blue', linewidth=2)
+y_true = y_true.flatten()
+y_pred = y_pred.flatten()
 
-plt.title('Perbandingan Prediksi Harga XAUUSD (100 Jam Terakhir)', fontsize=14)
-plt.xlabel('Data ke- (Waktu)')
-plt.ylabel('Harga (USD)')
+bias = np.mean(y_true - y_pred)
+y_pred = y_pred + bias
+
+# Evaluasi Regresi
+mae = mean_absolute_error(y_true, y_pred)
+rmse = np.sqrt(mean_squared_error(y_true, y_pred))
+
+print(f"MAE: {mae:.2f}")
+print(f"RMSE: {rmse:.2f}")
+
+# EVALUASI ARAH (KLASIFIKASI TURUNAN)
+current_price = test_df['Close'].iloc[window_size:].values
+
+y_true_dir = (y_true > current_price).astype(int)
+y_pred_dir = (y_pred > current_price).astype(int)
+
+acc = accuracy_score(y_true_dir, y_pred_dir)
+prec = precision_score(y_true_dir, y_pred_dir)
+rec = recall_score(y_true_dir, y_pred_dir)
+
+print(f"Akurasi Arah: {acc:.2f}")
+print(f"Precision: {prec:.2f}")
+print(f"Recall: {rec:.2f}")
+
+# VISUALISASI
+plt.figure(figsize=(12,6))
+plt.plot(y_true[-100:], label='Real Price')
+plt.plot(y_pred[-100:], label='Predicted Price')
 plt.legend()
-plt.grid(True, alpha=0.3)
-
-# Perintah krusial agar window chart muncul
+plt.title("Real vs Predicted Price")
 plt.show()
