@@ -30,12 +30,9 @@ df.ta.ema(length=50, append=True)
 df.ta.rsi(length=14, append=True)
 df.ta.atr(length=14, append=True)
 df.ta.macd(append=True)       # tambahan: MACD
-
-# Bollinger Bands - manual append agar nama kolom konsisten
-bb = df.ta.bbands(length=20)
-df['BBL_20_2.0'] = bb.iloc[:, 0] # Lower Band
-df['BBM_20_2.0'] = bb.iloc[:, 1] # Middle Band
-df['BBU_20_2.0'] = bb.iloc[:, 2] # Upper Band
+bb_cols = df.ta.bbands(length=20, append=True)  # tambahan: Bollinger Bands
+bbu_col = bb_cols.filter(like='BBU').columns[0]
+bbl_col = bb_cols.filter(like='BBL').columns[0]
 
 psar = df.ta.psar()
 df['PSAR'] = psar.iloc[:, 0].fillna(psar.iloc[:, 1])
@@ -81,12 +78,12 @@ df = fair_value_gap(df)
 # 1. Return & log return (stasioner, lebih mudah dipelajari LSTM)
 df['Return'] = df['Close'].pct_change()
 df['Log_Return'] = np.log(df['Close'] / df['Close'].shift(1))
-
 # 2. Fitur relatif (normalisasi alami terhadap harga saat ini)
+print("DEBUG - Columns available:", df.columns.tolist())
 df['EMA_diff'] = (df['EMA_20'] - df['EMA_50']) / df['Close']   # dalam % harga
 df['PSAR_diff'] = (df['Close'] - df['PSAR']) / df['Close']      # dalam % harga
-df['BB_width'] = (df['BBU_20_2.0'] - df['BBL_20_2.0']) / df['Close']  # lebar BB relatif
-df['BB_position'] = (df['Close'] - df['BBL_20_2.0']) / (df['BBU_20_2.0'] - df['BBL_20_2.0'] + 1e-9)
+df['BB_width'] = (df[bbu_col] - df[bbl_col]) / df['Close']  # lebar BB relatif
+df['BB_position'] = (df['Close'] - df[bbl_col]) / (df[bbu_col] - df[bbl_col] + 1e-9)
 df['ATR_pct'] = df['ATRr_14'] / df['Close']                     # ATR relatif
 
 # 3. Volatility & range relatif
@@ -316,6 +313,7 @@ axes[2].axhline(y=0, color='gray', linestyle='--', linewidth=0.8)
 axes[2].set_title(f'Return Prediction | Direction Accuracy={acc:.2%}')
 axes[2].set_xlabel('Bar')
 axes[2].set_ylabel('Return')
+
 axes[2].legend()
 axes[2].grid(True, alpha=0.3)
 

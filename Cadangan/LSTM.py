@@ -1,9 +1,3 @@
-"""
-=============================================================
-  XAUUSD H1 - LSTM Price Prediction dengan SMC Features
-  Diterjemahkan dari Pine Script SMC ke Python
-=============================================================
-"""
 
 import pandas as pd
 import numpy as np
