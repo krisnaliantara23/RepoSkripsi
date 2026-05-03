@@ -72,84 +72,29 @@ df = order_block(df)
 df = fair_value_gap(df)
 
 # ============================================================
-# FITUR ENGINEERING — KUNCI PERBAIKAN
+# FITUR ENGINEERING
 # ============================================================
-
-# 1. Return & log return (stasioner, lebih mudah dipelajari LSTM)
-df['Return'] = df['Close'].pct_change()
-df['Log_Return'] = np.log(df['Close'] / df['Close'].shift(1))
-# 2. Fitur relatif (normalisasi alami terhadap harga saat ini)
-print("DEBUG - Columns available:", df.columns.tolist())
-df['EMA_diff'] = (df['EMA_20'] - df['EMA_50']) / df['Close']   # dalam % harga
-df['PSAR_diff'] = (df['Close'] - df['PSAR']) / df['Close']      # dalam % harga
-df['BB_width'] = (df[bbu_col] - df[bbl_col]) / df['Close']  # lebar BB relatif
+df['EMA_diff'] = (df['EMA_20'] - df['EMA_50']) / df['Close']
+df['PSAR_diff'] = (df['Close'] - df['PSAR']) / df['Close']
+df['BB_width'] = (df[bbu_col] - df[bbl_col]) / df['Close']
 df['BB_position'] = (df['Close'] - df[bbl_col]) / (df[bbu_col] - df[bbl_col] + 1e-9)
-df['ATR_pct'] = df['ATRr_14'] / df['Close']                     # ATR relatif
-
-# 3. Volatility & range relatif
-df['Volatility'] = (df['High'] - df['Low']) / df['Close']
-df['Body_size'] = abs(df['Close'] - df['Open']) / df['Close']
-df['Upper_shadow'] = (df['High'] - df[['Open','Close']].max(axis=1)) / df['Close']
-df['Lower_shadow'] = (df[['Open','Close']].min(axis=1) - df['Low']) / df['Close']
-
-# 4. RSI normalisasi 0-1
+df['ATR_pct'] = df['ATRr_14'] / df['Close']
 df['RSI_norm'] = df['RSI_14'] / 100.0
-
-# 5. MACD normalisasi
 df['MACD_norm'] = df['MACD_12_26_9'] / df['Close']
 df['MACDs_norm'] = df['MACDs_12_26_9'] / df['Close']
-
-# 6. Swing dalam % harga
 df['swing_high_pct'] = (df['swing_high'] - df['Close']) / df['Close']
 df['swing_low_pct'] = (df['Close'] - df['swing_low']) / df['Close']
-
-# 7. OB & FVG normalisasi
 df['OB_bull_pct'] = df['OB_bull'] / (df['Close'] + 1e-9)
 df['OB_bear_pct'] = df['OB_bear'] / (df['Close'] + 1e-9)
 df['FVG_up_pct'] = df['FVG_up'] / (df['Close'] + 1e-9)
 df['FVG_down_pct'] = df['FVG_down'] / (df['Close'] + 1e-9)
 
-# 8. Volume normalisasi (jika ada)
-if 'Volume' in df.columns:
-    df['Volume_norm'] = df['Volume'] / (df['Volume'].rolling(20).mean() + 1e-9)
-
-# ============================================================
-# TARGET — PREDIKSI RETURN, BUKAN HARGA ABSOLUT
-# ============================================================
-# Memprediksi % perubahan harga (return) jauh lebih stabil
-# daripada prediksi harga absolut yang rentan scale mismatch
-df['Target_return'] = df['Close'].pct_change().shift(-1)  # return 1 bar ke depan
-
-# Handle NaN & Inf
+future_step = 3
+df['Target_return'] = df['Close'].pct_change(periods=future_step).shift(-future_step)
 df[['swing_high','swing_low']] = df[['swing_high','swing_low']].ffill().bfill()
 df[['swing_high_pct','swing_low_pct']] = df[['swing_high_pct','swing_low_pct']].ffill().bfill()
 df.replace([np.inf, -np.inf], np.nan, inplace=True)
 df.dropna(inplace=True)
-
-# ============================================================
-# DEFINISI FITUR (semua sudah relatif/ternormalisasi)
-# ============================================================
-fitur = [
-    # Indikator normalisasi relatif
-    'EMA_diff', 'PSAR_diff', 'BB_width', 'BB_position',
-    'ATR_pct', 'RSI_norm', 'MACD_norm', 'MACDs_norm',
-
-    # SMC normalisasi
-    'swing_high_pct', 'swing_low_pct',
-    'OB_bull_pct', 'OB_bear_pct',
-    'FVG_up_pct', 'FVG_down_pct',
-
-    # Price action relatif
-    'Return', 'Log_Return',
-    'Volatility', 'Body_size', 'Upper_shadow', 'Lower_shadow',
-]
-
-# Tambah volume jika ada
-if 'Volume_norm' in df.columns:
-    fitur.append('Volume_norm')
-
-print(f"Total fitur: {len(fitur)}")
-print(f"Total data: {len(df)}")
 
 # ============================================================
 # SPLIT DATA
@@ -164,25 +109,7 @@ test_df  = df[train_size+val_size:]
 print(f"Train: {len(train_df)}, Val: {len(val_df)}, Test: {len(test_df)}")
 
 # ============================================================
-# SCALING — hanya fitur X yang perlu discale
-# Target (return) sudah kecil, tapi tetap discale agar stabil
-# ============================================================
-scaler_x = MinMaxScaler(feature_range=(-1, 1))  # range -1,1 lebih baik untuk LSTM
-scaler_y = MinMaxScaler(feature_range=(-1, 1))
-
-scaler_x.fit(train_df[fitur])
-scaler_y.fit(train_df[['Target_return']])
-
-train_x = scaler_x.transform(train_df[fitur])
-val_x   = scaler_x.transform(val_df[fitur])
-test_x  = scaler_x.transform(test_df[fitur])
-
-train_y = scaler_y.transform(train_df[['Target_return']])
-val_y   = scaler_y.transform(val_df[['Target_return']])
-test_y  = scaler_y.transform(test_df[['Target_return']])
-
-# ============================================================
-# SLIDING WINDOW
+# UTILITY FUNCTIONS
 # ============================================================
 def create_dataset(X, y, window=60):
     Xs, ys = [], []
@@ -193,132 +120,176 @@ def create_dataset(X, y, window=60):
 
 window_size = 60
 
-X_train, y_train = create_dataset(train_x, train_y, window_size)
-X_val,   y_val   = create_dataset(val_x,   val_y,   window_size)
-X_test,  y_test  = create_dataset(test_x,  test_y,  window_size)
-
-print(f"Shape X_train: {X_train.shape}")
-
 # ============================================================
-# MODEL — dengan BatchNormalization untuk stabilitas
+# EXPERIMENT SETUP
 # ============================================================
-model = Sequential([
-    LSTM(128, return_sequences=True, input_shape=(X_train.shape[1], X_train.shape[2])),
-    BatchNormalization(),
-    Dropout(0.3),
 
-    LSTM(64, return_sequences=True),
-    BatchNormalization(),
-    Dropout(0.2),
+# 1. OHLC ONLY
+fitur_ohlc = ['Open', 'High', 'Low', 'Close']
 
-    LSTM(32, return_sequences=False),
-    Dropout(0.2),
-
-    Dense(32, activation='relu'),
-    Dense(16, activation='relu'),
-    Dense(1)
-])
-
-model.compile(optimizer=Adam(learning_rate=0.001), loss='huber')  # Huber loss lebih robust terhadap outlier
-model.summary()
-
-callbacks = [
-    EarlyStopping(monitor='val_loss', patience=15, restore_best_weights=True),
-    ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=7, min_lr=1e-6, verbose=1)
+# 2. OHLC + INDIKATOR
+fitur_indikator = [
+    'Open', 'High', 'Low', 'Close',
+    'EMA_diff', 'PSAR_diff', 'BB_width', 'BB_position',
+    'ATR_pct', 'RSI_norm', 'MACD_norm', 'MACDs_norm',
 ]
 
-history = model.fit(
-    X_train, y_train,
-    validation_data=(X_val, y_val),
-    epochs=150,
-    batch_size=32,
-    callbacks=callbacks,
-    verbose=1
-)
+# 3. OHLC + INDIKATOR + SMC (FULL MODEL)
+fitur_smc = [
+    'Open', 'High', 'Low', 'Close',
+    'EMA_diff', 'PSAR_diff', 'BB_width', 'BB_position',
+    'ATR_pct', 'RSI_norm', 'MACD_norm', 'MACDs_norm',
+    'swing_high_pct', 'swing_low_pct',
+    'OB_bull_pct', 'OB_bear_pct',
+    'FVG_up_pct', 'FVG_down_pct',
+]
+
+def run_experiment(fitur_list, label, epochs=30):
+    print(f"\n===== RUNNING EXPERIMENT: {label} =====")
+    
+    # Scalers
+    scaler_x = MinMaxScaler(feature_range=(-1, 1))
+    scaler_y = MinMaxScaler(feature_range=(-1, 1))
+    
+    scaler_x.fit(train_df[fitur_list])
+    scaler_y.fit(train_df[['Target_return']])
+    
+    train_x = scaler_x.transform(train_df[fitur_list])
+    val_x   = scaler_x.transform(val_df[fitur_list])
+    test_x  = scaler_x.transform(test_df[fitur_list])
+    
+    train_y = scaler_y.transform(train_df[['Target_return']])
+    val_y   = scaler_y.transform(val_df[['Target_return']])
+    test_y  = scaler_y.transform(test_df[['Target_return']])
+    
+    # Datasets
+    X_train, y_train = create_dataset(train_x, train_y, window_size)
+    X_val, y_val     = create_dataset(val_x, val_y, window_size)
+    X_test, y_test   = create_dataset(test_x, test_y, window_size)
+    
+    # Model
+    model = Sequential([
+        LSTM(64, return_sequences=True, input_shape=(X_train.shape[1], X_train.shape[2])),
+        Dropout(0.2),
+        LSTM(32),
+        Dropout(0.2),
+        Dense(16, activation='relu'),
+        Dense(1, activation='tanh')
+    ])
+    
+    model.compile(optimizer=Adam(0.001), loss='huber')
+    
+    # Train
+    model.fit(
+        X_train, y_train,
+        validation_data=(X_val, y_val),
+        epochs=epochs,
+        batch_size=32,
+        verbose=0,
+        callbacks=[EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)]
+    )
+    
+    # Predict
+    y_pred_scaled = model.predict(X_test)
+    y_true = scaler_y.inverse_transform(y_test).flatten()
+    y_pred = scaler_y.inverse_transform(y_pred_scaled).flatten()
+    
+    # Reconstruct Prices
+    current_price = test_df['Close'].iloc[window_size:].values
+    y_true_price = current_price * (1 + y_true)
+    y_pred_price = current_price * (1 + y_pred)
+    
+    # Metrics
+    acc = accuracy_score((y_true > 0), (y_pred > 0))
+    mae = mean_absolute_error(y_true_price, y_pred_price)
+    rmse = np.sqrt(mean_squared_error(y_true_price, y_pred_price))
+    mape = mean_absolute_percentage_error(y_true_price, y_pred_price) * 100
+    
+    print(f"Accuracy: {acc:.4f}")
+    print(f"MAE:      {mae:.4f}")
+    print(f"RMSE:     {rmse:.4f}")
+    print(f"MAPE:     {mape:.4f}%")
+    
+    return {
+        'acc': acc, 'mae': mae, 'rmse': rmse, 'mape': mape,
+        'y_true': y_true_price, 'y_pred': y_pred_price
+    }
+
+# Run the 3 experiments
+res1 = run_experiment(fitur_ohlc, "OHLC", epochs=30)
+res2 = run_experiment(fitur_indikator, "OHLC + Indikator", epochs=30)
+res3 = run_experiment(fitur_smc, "OHLC + Indikator + SMC", epochs=30)
 
 # ============================================================
-# PREDIKSI — rekonstruksi harga dari prediksi return
+# TABEL RINGKASAN ERROR
 # ============================================================
-y_pred_scaled = model.predict(X_test)
-
-# Inverse transform: kembali ke return asli
-y_true_return = scaler_y.inverse_transform(y_test).flatten()
-y_pred_return = scaler_y.inverse_transform(y_pred_scaled).flatten()
-
-# Rekonstruksi harga dari return prediksi
-# current_price = harga penutupan saat ini (bar ke-window_size dan seterusnya)
-current_price = test_df['Close'].iloc[window_size:].values
-
-# Harga aktual berikutnya
-y_true_price = current_price * (1 + y_true_return)
-
-# Harga prediksi berikutnya
-y_pred_price = current_price * (1 + y_pred_return)
+results_df = pd.DataFrame({
+    'Model': ['OHLC', 'OHLC + Indikator', 'OHLC + Indikator + SMC'],
+    'Accuracy': [res1['acc'], res2['acc'], res3['acc']],
+    'MAE': [res1['mae'], res2['mae'], res3['mae']],
+    'RMSE': [res1['rmse'], res2['rmse'], res3['rmse']],
+    'MAPE (%)': [res1['mape'], res2['mape'], res3['mape']]
+})
+print("\n===== RINGKASAN HASIL EVALUASI =====")
+print(results_df.to_string(index=False))
 
 # ============================================================
-# EVALUASI REGRESI
+# GRAFIK PERBANDINGAN AKURASI & ERROR
 # ============================================================
-mae  = mean_absolute_error(y_true_price, y_pred_price)
-rmse = np.sqrt(mean_squared_error(y_true_price, y_pred_price))
-mape = mean_absolute_percentage_error(y_true_price, y_pred_price) * 100
+labels = ['OHLC', 'OHLC + Indikator', 'OHLC + Indikator + SMC']
+metrics = ['Accuracy', 'MAE', 'RMSE']
+data = [
+    [res1['acc'], res2['acc'], res3['acc']],
+    [res1['mae'], res2['mae'], res3['mae']],
+    [res1['rmse'], res2['rmse'], res3['rmse']]
+]
 
-print("\n========== EVALUASI REGRESI ==========")
-print(f"MAE:  {mae:.4f}")
-print(f"RMSE: {rmse:.4f}")
-print(f"MAPE: {mape:.4f}%")
+fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+
+colors = ['skyblue', 'lightgreen', 'salmon']
+
+for i, metric in enumerate(metrics):
+    bars = axes[i].bar(labels, data[i], color=colors)
+    axes[i].set_title(f'Perbandingan {metric}')
+    axes[i].set_ylabel(metric)
+    axes[i].grid(axis='y', linestyle='--', alpha=0.7)
+    
+    # Tambahkan label nilai di atas bar
+    for bar in bars:
+        yval = bar.get_height()
+        axes[i].text(bar.get_x() + bar.get_width()/2, yval * 1.01, f'{yval:.4f}', ha='center', va='bottom', fontweight='bold')
+
+plt.tight_layout()
+plt.savefig('comparison_metrics.png', dpi=150)
 
 # ============================================================
-# EVALUASI ARAH (KLASIFIKASI)
+# GRAFIK HARGA (REAL VS PREDICTED)
 # ============================================================
-y_true_dir = (y_true_return > 0).astype(int)
-y_pred_dir = (y_pred_return > 0).astype(int)
+fig, axes = plt.subplots(3, 1, figsize=(12, 18))
 
-acc  = accuracy_score(y_true_dir, y_pred_dir)
-prec = precision_score(y_true_dir, y_pred_dir, zero_division=0)
-rec  = recall_score(y_true_dir, y_pred_dir, zero_division=0)
-
-print("\n========== EVALUASI ARAH ==========")
-print(f"Akurasi Arah: {acc:.4f}")
-print(f"Precision:    {prec:.4f}")
-print(f"Recall:       {rec:.4f}")
-
-# ============================================================
-# VISUALISASI
-# ============================================================
-fig, axes = plt.subplots(3, 1, figsize=(14, 14))
-
-# Plot 1: Training history
-axes[0].plot(history.history['loss'], label='Train Loss', color='blue')
-axes[0].plot(history.history['val_loss'], label='Val Loss', color='orange')
-axes[0].set_title('Training History')
-axes[0].set_xlabel('Epoch')
-axes[0].set_ylabel('Huber Loss')
+# Plot Experiment 1
+axes[0].plot(res1['y_true'], label='Real Price', color='blue', alpha=0.7)
+axes[0].plot(res1['y_pred'], label='Predicted Price', color='red', linestyle='--', alpha=0.7)
+axes[0].set_title(f"OHLC - Real vs Predicted Price (MAE: {res1['mae']:.2f})")
 axes[0].legend()
 axes[0].grid(True, alpha=0.3)
 
-# Plot 2: Real vs Predicted Price (100 data terakhir)
-n = 200
-axes[1].plot(y_true_price[-n:], label='Real Price', color='blue', linewidth=1.5)
-axes[1].plot(y_pred_price[-n:], label='Predicted Price', color='red', linewidth=1.2, alpha=0.8)
-axes[1].set_title(f'Real vs Predicted Price (last {n} bars) | MAE={mae:.2f}, MAPE={mape:.2f}%')
-axes[1].set_xlabel('Bar')
-axes[1].set_ylabel('Price (USD)')
+# Plot Experiment 2
+axes[1].plot(res2['y_true'], label='Real Price', color='blue', alpha=0.7)
+axes[1].plot(res2['y_pred'], label='Predicted Price', color='green', linestyle='--', alpha=0.7)
+axes[1].set_title(f"OHLC + Indikator - Real vs Predicted Price (MAE: {res2['mae']:.2f})")
 axes[1].legend()
 axes[1].grid(True, alpha=0.3)
 
-# Plot 3: Predicted Return vs True Return
-axes[2].plot(y_true_return[-n:], label='True Return', color='blue', linewidth=1.2, alpha=0.7)
-axes[2].plot(y_pred_return[-n:], label='Predicted Return', color='red', linewidth=1.2, alpha=0.8)
-axes[2].axhline(y=0, color='gray', linestyle='--', linewidth=0.8)
-axes[2].set_title(f'Return Prediction | Direction Accuracy={acc:.2%}')
-axes[2].set_xlabel('Bar')
-axes[2].set_ylabel('Return')
-
+# Plot Experiment 3
+axes[2].plot(res3['y_true'], label='Real Price', color='blue', alpha=0.7)
+axes[2].plot(res3['y_pred'], label='Predicted Price', color='orange', linestyle='--', alpha=0.7)
+axes[2].set_title(f"OHLC + Indikator + SMC - Real vs Predicted Price (MAE: {res3['mae']:.2f})")
 axes[2].legend()
 axes[2].grid(True, alpha=0.3)
 
 plt.tight_layout()
-plt.savefig('xauusd_prediction_result.png', dpi=150, bbox_inches='tight')
-plt.show()
+plt.savefig('comparison_prices.png', dpi=150)
 
-print("\nSelesai! Plot disimpan ke 'xauusd_prediction_result.png'")
+print("\nEksperimen selesai! Grafik perbandingan disimpan ke 'comparison_metrics.png' dan 'comparison_prices.png'")
+
