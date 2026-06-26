@@ -27,79 +27,72 @@ df.rename(columns={
 # ============================================================
 df.ta.ema(length=20, append=True)
 df.ta.ema(length=50, append=True)
-df.ta.ema(length=20, append=True)
-df.ta.ema(length=50, append=True)
 df.ta.rsi(length=14, append=True)
 df.ta.atr(length=14, append=True)
-df.ta.macd(append=True)
+df.ta.macd(append=True)       # tambahan: MACD
+df.ta.bbands(length=20, append=True)
+bbu_col = [c for c in df.columns if 'BBU' in c][0]
+bbl_col = [c for c in df.columns if 'BBL' in c][0]
 
-bb_cols = df.ta.bbands(length=20, append=True)
-bbu_col = bb_cols.filter(like='BBU').columns[0]
-bbl_col = bb_cols.filter(like='BBL').columns[0]
+psar = df.ta.psar()
+df['PSAR'] = psar.iloc[:, 0].fillna(psar.iloc[:, 1])
 
 # ============================================================
-# SMC (SMART MONEY CONCEPT) - VERSION 2 (WITH SWEEP)
+# SMC (SMART MONEY CONCEPT)
 # ============================================================
-def detect_smc_v2(df, window=5):
-    df = df.copy()
-    
-    # 1. SWING POINTS
-    df['swing_high'] = np.where(df['High'] == df['High'].rolling(window=window, center=True).max(), df['High'], np.nan)
-    df['swing_low'] = np.where(df['Low'] == df['Low'].rolling(window=window, center=True).min(), df['Low'], np.nan)
-    
-    sh_filled = df['swing_high'].ffill()
-    sl_filled = df['swing_low'].ffill()
-    
-    # 2. LIQUIDITY SWEEP DETECTION (Sinyal Kuat SMC)
-    # Price hits recent high/low then rejects
-    df['sweep_bull'] = np.where((df['Low'] < sl_filled.shift(1)) & (df['Close'] > sl_filled.shift(1)), 1, 0)
-    df['sweep_bear'] = np.where((df['High'] > sh_filled.shift(1)) & (df['Close'] < sh_filled.shift(1)), 1, 0)
-    
-    # 3. BOS & ChoCh
-    df['BOS'] = 0
-    df['BOS'] = np.where((df['Close'] > sh_filled.shift(1)), 1, df['BOS'])
-    df['BOS'] = np.where((df['Close'] < sl_filled.shift(1)), -1, df['BOS'])
-    
-    # 4. ORDER BLOCKS (OB)
-    df['OB_bull'] = np.where((df['Close'] > df['Open']) & (df['Close'].shift(1) < df['Open'].shift(1)) & (df['Close'] > df['High'].shift(1)), df['Low'].shift(1), 0)
-    df['OB_bear'] = np.where((df['Close'] < df['Open']) & (df['Close'].shift(1) > df['Open'].shift(1)) & (df['Close'] < df['Low'].shift(1)), df['High'].shift(1), 0)
-    
-    # 5. FAIR VALUE GAPS (FVG)
-    df['FVG_up'] = np.where(df['Low'] > df['High'].shift(2), df['Low'] - df['High'].shift(2), 0)
-    df['FVG_down'] = np.where(df['High'] < df['Low'].shift(2), df['Low'].shift(2) - df['High'], 0)
-    
-    # 6. PREMIUM / DISCOUNT
-    df['range_high'] = df['High'].rolling(window=50).max()
-    df['range_low'] = df['Low'].rolling(window=50).min()
-    df['PD_zone'] = (df['Close'] - df['range_low']) / (df['range_high'] - df['range_low'] + 1e-9)
-    
+def swing_high_low(df, window=5):
+    df['swing_high'] = np.where(
+        df['High'] == df['High'].rolling(window=window, center=True).max(),
+        df['High'], np.nan
+    )
+    df['swing_low'] = np.where(
+        df['Low'] == df['Low'].rolling(window=window, center=True).min(),
+        df['Low'], np.nan
+    )
     return df
 
-df = detect_smc_v2(df)
+def order_block(df):
+    df['OB_bull'] = np.where(
+        (df['Close'] > df['Open']) & (df['Close'].shift(1) < df['Open'].shift(1)),
+        df['Low'], 0
+    )
+    df['OB_bear'] = np.where(
+        (df['Close'] < df['Open']) & (df['Close'].shift(1) > df['Open'].shift(1)),
+        df['High'], 0
+    )
+    return df
+
+def fair_value_gap(df):
+    df['FVG_up'] = np.where(df['Low'] > df['High'].shift(2), df['Low'] - df['High'].shift(2), 0)
+    df['FVG_down'] = np.where(df['High'] < df['Low'].shift(2), df['Low'].shift(2) - df['High'], 0)
+    return df
+
+df = swing_high_low(df)
+df = order_block(df)
+df = fair_value_gap(df)
 
 # ============================================================
 # FITUR ENGINEERING
 # ============================================================
 df['EMA_diff'] = (df['EMA_20'] - df['EMA_50']) / df['Close']
+df['PSAR_diff'] = (df['Close'] - df['PSAR']) / df['Close']
+df['BB_width'] = (df[bbu_col] - df[bbl_col]) / df['Close']
 df['BB_position'] = (df['Close'] - df[bbl_col]) / (df[bbu_col] - df[bbl_col] + 1e-9)
+df['ATR_pct'] = df['ATRr_14'] / df['Close']
 df['RSI_norm'] = df['RSI_14'] / 100.0
 df['MACD_norm'] = df['MACD_12_26_9'] / df['Close']
-
-# Fitur SMC Terseleksi
-df['BSL_pct'] = (df['High'].rolling(24).max() - df['Close']) / df['Close']
-df['SSL_pct'] = (df['Close'] - df['Low'].rolling(24).min()) / df['Close']
+df['MACDs_norm'] = df['MACDs_12_26_9'] / df['Close']
+df['swing_high_pct'] = (df['swing_high'] - df['Close']) / df['Close']
+df['swing_low_pct'] = (df['Close'] - df['swing_low']) / df['Close']
 df['OB_bull_pct'] = df['OB_bull'] / (df['Close'] + 1e-9)
 df['OB_bear_pct'] = df['OB_bear'] / (df['Close'] + 1e-9)
 df['FVG_up_pct'] = df['FVG_up'] / (df['Close'] + 1e-9)
 df['FVG_down_pct'] = df['FVG_down'] / (df['Close'] + 1e-9)
 
-future_step = 3 # Revert to 3 for better structural alignment
+future_step = 3
 df['Target_return'] = df['Close'].pct_change(periods=future_step).shift(-future_step)
-
-# Fillna
-cols_to_fill = ['swing_high', 'swing_low', 'BOS', 'PD_zone']
-df[cols_to_fill] = df[cols_to_fill].ffill().bfill()
-
+df[['swing_high','swing_low']] = df[['swing_high','swing_low']].ffill().bfill()
+df[['swing_high_pct','swing_low_pct']] = df[['swing_high_pct','swing_low_pct']].ffill().bfill()
 df.replace([np.inf, -np.inf], np.nan, inplace=True)
 df.dropna(inplace=True)
 
@@ -118,14 +111,14 @@ print(f"Train: {len(train_df)}, Val: {len(val_df)}, Test: {len(test_df)}")
 # ============================================================
 # UTILITY FUNCTIONS
 # ============================================================
-def create_dataset(X, y, window=60):
+def create_dataset(X, y, window=32):
     Xs, ys = [], []
     for i in range(window, len(X)):
         Xs.append(X[i-window:i])
         ys.append(y[i])
     return np.array(Xs), np.array(ys)
 
-window_size = 60
+window_size = 32
 
 # ============================================================
 # EXPERIMENT SETUP
@@ -137,51 +130,21 @@ fitur_ohlc = ['Open', 'High', 'Low', 'Close']
 # 2. OHLC + INDIKATOR
 fitur_indikator = [
     'Open', 'High', 'Low', 'Close',
-    'EMA_diff', 'BB_position', 'RSI_norm', 'MACD_norm'
+    'EMA_diff', 'PSAR_diff', 'BB_width', 'BB_position',
+    'ATR_pct', 'RSI_norm', 'MACD_norm', 'MACDs_norm',
 ]
 
-# 3. OHLC + INDIKATOR + SMC (INTEGRASI PENUH)
+# 3. OHLC + INDIKATOR + SMC (FULL MODEL)
 fitur_smc = [
     'Open', 'High', 'Low', 'Close',
-    'EMA_diff', 'BB_position', 'RSI_norm', 'MACD_norm',
-    'BOS', 'PD_zone', 'sweep_bull', 'sweep_bear',
-    'OB_bull_pct', 'OB_bear_pct', 'FVG_up_pct', 'FVG_down_pct',
-    'BSL_pct', 'SSL_pct'
+    'EMA_diff', 'PSAR_diff', 'BB_width', 'BB_position',
+    'ATR_pct', 'RSI_norm', 'MACD_norm', 'MACDs_norm',
+    'swing_high_pct', 'swing_low_pct',
+    'OB_bull_pct', 'OB_bear_pct',
+    'FVG_up_pct', 'FVG_down_pct',
 ]
 
-from tensorflow.keras.layers import Layer
-import tensorflow.keras.backend as K
-
-class AttentionLayer(Layer):
-    def __init__(self, **kwargs):
-        super(AttentionLayer, self).__init__(**kwargs)
-
-    def build(self, input_shape):
-        self.W = self.add_weight(name='attention_weight', 
-                                 shape=(input_shape[-1], 1), 
-                                 initializer='random_normal', 
-                                 trainable=True)
-        self.b = self.add_weight(name='attention_bias', 
-                                 shape=(input_shape[1], 1), 
-                                 initializer='zeros', 
-                                 trainable=True)
-        super(AttentionLayer, self).build(input_shape)
-
-    def call(self, x):
-        # Alignment scores
-        e = K.tanh(K.dot(x, self.W) + self.b)
-        # Remove dimension of size 1
-        e = K.squeeze(e, axis=-1)
-        # Compute weights
-        alpha = K.softmax(e)
-        # Reshape for multiplication
-        alpha = K.expand_dims(alpha, axis=-1)
-        # Compute context vector
-        context = x * alpha
-        context = K.sum(context, axis=1)
-        return context
-
-def run_experiment(fitur_list, label, epochs=50):
+def run_experiment(fitur_list, label, epochs=30):
     print(f"\n===== RUNNING EXPERIMENT: {label} =====")
     
     # Scalers
@@ -204,28 +167,17 @@ def run_experiment(fitur_list, label, epochs=50):
     X_val, y_val     = create_dataset(val_x, val_y, window_size)
     X_test, y_test   = create_dataset(test_x, test_y, window_size)
     
-    # Model with Attention
-    from tensorflow.keras.layers import Input
-    from tensorflow.keras.models import Model
+    # Model
+    model = Sequential([
+        LSTM(64, return_sequences=True, input_shape=(X_train.shape[1], X_train.shape[2])),
+        Dropout(0.2),
+        LSTM(32),
+        Dropout(0.2),
+        Dense(16, activation='relu'),
+        Dense(1, activation='tanh')
+    ])
     
-    inputs = Input(shape=(X_train.shape[1], X_train.shape[2]))
-    x = LSTM(128, return_sequences=True)(inputs)
-    x = BatchNormalization()(x)
-    x = Dropout(0.2)(x)
-    x = LSTM(64, return_sequences=True)(x)
-    x = BatchNormalization()(x)
-    x = Dropout(0.2)(x)
-    
-    # Attention Mechanism
-    context = AttentionLayer()(x)
-    
-    x = Dense(64, activation='relu')(context)
-    x = Dropout(0.2)(x)
-    outputs = Dense(1, activation='tanh')(x)
-    
-    model = Model(inputs=inputs, outputs=outputs)
-    
-    model.compile(optimizer=Adam(0.001), loss='mse')
+    model.compile(optimizer=Adam(0.001), loss='huber')
     
     # Train
     model.fit(
@@ -234,11 +186,11 @@ def run_experiment(fitur_list, label, epochs=50):
         epochs=epochs,
         batch_size=32,
         verbose=0,
-        callbacks=[
-            EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True),
-            ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=0.00001)
-        ]
-    )
+        # Hapus atau gunakan:
+callbacks=[
+    EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True),
+    ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=3)  # tambahkan ini
+])
     
     # Predict
     y_pred_scaled = model.predict(X_test)
@@ -246,7 +198,7 @@ def run_experiment(fitur_list, label, epochs=50):
     y_pred = scaler_y.inverse_transform(y_pred_scaled).flatten()
     
     # Reconstruct Prices
-    current_price = test_df['Close'].iloc[window_size:].values
+    current_price = test_df['Close'].values[window_size:window_size + len(y_pred)]
     y_true_price = current_price * (1 + y_true)
     y_pred_price = current_price * (1 + y_pred)
     
@@ -267,9 +219,9 @@ def run_experiment(fitur_list, label, epochs=50):
     }
 
 # Run the 3 experiments
-res1 = run_experiment(fitur_ohlc, "OHLC", epochs=20)
-res2 = run_experiment(fitur_indikator, "OHLC + Indikator", epochs=20)
-res3 = run_experiment(fitur_smc, "OHLC + Indikator + SMC", epochs=20)
+res1 = run_experiment(fitur_ohlc, "OHLC", epochs=12)
+res2 = run_experiment(fitur_indikator, "OHLC + Indikator", epochs=12)
+res3 = run_experiment(fitur_smc, "OHLC + Indikator + SMC", epochs=12)
 
 # ============================================================
 # TABEL RINGKASAN ERROR
@@ -340,7 +292,7 @@ axes[2].legend()
 axes[2].grid(True, alpha=0.3)
 
 plt.tight_layout()
-plt.savefig('comparison_prices.png', dpi=150)
+plt.savefig('comparison_prices.png', dpi=100)
 
 print("\nEksperimen selesai! Grafik perbandingan disimpan ke 'comparison_metrics.png' dan 'comparison_prices.png'")
 
